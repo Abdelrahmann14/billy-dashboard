@@ -153,7 +153,7 @@ export function MembersTable({ members, onSelectMember, getCurrentTimeDiffString
                           {/* Missing update warning */}
                           {member.status === 'working' && member.hasMissingUpdate && (
                             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-50 text-red-600 border border-red-100 animate-pulse">
-                              <AlertCircle className="w-3 h-3" /> No Update (2h+)
+                              <AlertCircle className="w-3 h-3" /> Missing Window Update
                             </span>
                           )}
                         </div>
@@ -240,7 +240,7 @@ export function MembersTable({ members, onSelectMember, getCurrentTimeDiffString
 
                       {member.status === 'working' && member.hasMissingUpdate && (
                         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-red-50 text-red-600 border border border-red-100">
-                          🔴 No Update (2h+)
+                          🔴 Missing Window Update
                         </span>
                       )}
                     </div>

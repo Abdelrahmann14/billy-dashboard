@@ -93,7 +93,7 @@ export function AlertsSection({ members, onSelectMember }: AlertsSectionProps) {
                         Missing Update
                       </span>
                       <p className="text-xs text-slate-500 mt-0.5 sm:mt-0 sm:inline sm:ml-2">
-                        Working since {m.login || 'N/A'} but hasn't posted a Trello update in over 2 hours.
+                        Working since {m.login || 'N/A'} but has not completed their required updates inside the scheduled 2-hour window.
                       </p>
                     </div>
                   </div>

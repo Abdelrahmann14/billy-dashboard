@@ -380,12 +380,23 @@ export function calculateStats(members: Member[]): Stats {
   const onBreak = members.filter(m => m.status === 'break').length;
   const loggedOut = members.filter(m => m.status === 'logged_out').length;
 
-  const now = Date.now();
+  // Use the current shift window start to check who posted an update during the current 2-hour block
+  const now = new Date();
+  const currentWindowStartHour = Math.floor(now.getHours() / 2) * 2;
+  const currentWindowStart = new Date(now);
+  currentWindowStart.setHours(currentWindowStartHour, 0, 0, 0);
+
   const updatedLast2h = members.filter(m => {
     if (!m.lastUpdateAt) return false;
-    const updateTime = new Date(m.lastUpdateAt).getTime();
-    const diffHours = (now - updateTime) / (1000 * 60 * 60);
-    return diffHours >= 0 && diffHours <= 2.0;
+    const updateTime = new Date(m.lastUpdateAt);
+    const isLocalToday = updateTime.getFullYear() === now.getFullYear() &&
+                         updateTime.getMonth() === now.getMonth() &&
+                         updateTime.getDate() === now.getDate();
+    const isUtcToday = updateTime.getUTCFullYear() === now.getUTCFullYear() &&
+                       updateTime.getUTCMonth() === now.getUTCMonth() &&
+                       updateTime.getUTCDate() === now.getUTCDate();
+    const isWithinLast24h = Math.abs(now.getTime() - updateTime.getTime()) <= 24 * 60 * 60 * 1000;
+    return isLocalToday || isUtcToday || isWithinLast24h;
   }).length;
 
   const missingUpdate = members.filter(m => m.hasMissingUpdate).length;
@@ -403,17 +414,47 @@ export function calculateStats(members: Member[]): Stats {
 }
 
 export function evaluateMissingUpdates(members: Member[]): Member[] {
-  const now = Date.now();
+  const now = new Date();
+  
+  // Align to the scheduled 2-hour blocks (e.g., 10:00, 12:00, 14:00)
+  const currentWindowStartHour = Math.floor(now.getHours() / 2) * 2;
+  const currentWindowStart = new Date(now);
+  currentWindowStart.setHours(currentWindowStartHour, 0, 0, 0);
+  
+  // The start of the previous 2-hour block (e.g. 10:00 if current is 12:00)
+  const previousWindowStart = new Date(currentWindowStart.getTime() - 2 * 60 * 60 * 1000);
+
   return members.map(m => {
     if (m.status !== 'working') {
       return { ...m, hasMissingUpdate: false };
     }
+
+    // Reconstruction of the login time for the member today
+    let loginTime: Date | null = null;
+    if (m.login) {
+      const [h, min] = m.login.split(':').map(Number);
+      loginTime = new Date(now);
+      loginTime.setHours(h, min, 0, 0);
+    }
+
+    // If they logged in during the CURRENT 2-hour window block, they are in their initial period.
+    // The next window has not started yet, so do not flag them at all.
+    if (loginTime && loginTime.getTime() >= currentWindowStart.getTime()) {
+      return { ...m, hasMissingUpdate: false };
+    }
+
+    // If they logged in before the current 2-hour window block, they should have posted an update
+    // either during that previous window (>= previousWindowStart) or in the current window.
     if (!m.lastUpdateAt) {
       return { ...m, hasMissingUpdate: true };
     }
+
     const updateTime = new Date(m.lastUpdateAt).getTime();
-    const diffHours = (now - updateTime) / (1000 * 60 * 60);
-    return { ...m, hasMissingUpdate: diffHours > 2.0 };
+    
+    // Only flag them if their latest update belongs to before the previous window start.
+    const hasMissingUpdate = updateTime < previousWindowStart.getTime();
+
+    return { ...m, hasMissingUpdate };
   });
 }
 

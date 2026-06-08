@@ -12,15 +12,26 @@ async function startServer() {
   app.get("/api/team-dashboard", async (req, res) => {
     const targetUrl = (req.query.url as string) || "https://athina.pixelearth.co.uk/webhook/team-dashboard";
 
+    // Set non-caching headers to prevent any browser, intermediate proxy or CDN from caching this dashboard feed
+    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
+
     try {
+      // Append cache buster to the targetUrl to force upstream (n8n/Athina) to pull fresh logs
+      const urlObj = new URL(targetUrl);
+      urlObj.searchParams.set("_cb", Date.now().toString());
+
       const controller = new AbortController();
       const id = setTimeout(() => controller.abort(), 9000); // 9 seconds timeout
 
-      const backendResponse = await fetch(targetUrl, {
+      const backendResponse = await fetch(urlObj.toString(), {
         method: "GET",
         headers: {
           "Accept": "application/json",
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Team-Activity-Dashboard/1.0",
+          "Cache-Control": "no-cache, no-store, must-revalidate",
+          "Pragma": "no-cache"
         },
         signal: controller.signal,
       });

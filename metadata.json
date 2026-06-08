@@ -1,5 +1,5 @@
 {
-  "name": "Team Activity Dashboard",
+  "name": "Billy's Dashboard",
   "description": "Real-time team monitoring dashboard tracking status, updates, and activities.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]

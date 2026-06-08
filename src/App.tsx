@@ -4,12 +4,12 @@
  */
 
 import { useState, useEffect, useRef } from 'react';
-import { getInitialDashboardData, simulateActivity } from './data/mockData';
+import { getInitialDashboardData, simulateActivity, calculateStats, evaluateMissingUpdates } from './data/mockData';
 import { DashboardData, Member } from './types';
 import { StatsStrip } from './components/StatsStrip';
 import { AlertsSection } from './components/AlertsSection';
 import { MembersTable } from './components/MembersTable';
-import { LiveActivityFeed } from './components/LiveActivityFeed';
+import { LiveActivityFeed, isHighPriorityAlert } from './components/LiveActivityFeed';
 import { MemberDetailDrawer } from './components/MemberDetailDrawer';
 import { AnimatePresence, motion } from 'motion/react';
 import { 
@@ -25,7 +25,8 @@ import {
   HelpCircle,
   Database,
   AlertCircle,
-  AlertTriangle
+  AlertTriangle,
+  Volume2
 } from 'lucide-react';
 
 // ==========================================
@@ -39,16 +40,11 @@ const API_ENDPOINT = "https://athina.pixelearth.co.uk/webhook/team-dashboard";
 export default function App() {
   const [dashboardData, setDashboardData] = useState<DashboardData>(() => getInitialDashboardData());
   const [secondsSinceLastUpdate, setSecondsSinceLastUpdate] = useState(0);
-  const [countdown, setCountdown] = useState(20);
+  const [countdown, setCountdown] = useState(60);
   const [hasConnectionError, setHasConnectionError] = useState(false);
   const [connectionErrorDetail, setConnectionErrorDetail] = useState<string | null>(null);
   const [isFetching, setIsFetching] = useState(false);
-  const [isSimulationPaused, setIsSimulationPaused] = useState(false);
   const [selectedMember, setSelectedMember] = useState<Member | null>(null);
-  
-  // Track runtime endpoint in states to allow UI overrides
-  const [activeEndpoint, setActiveEndpoint] = useState(API_ENDPOINT);
-  const [showConfig, setShowConfig] = useState(false);
 
   // Interval references
   const mainTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -77,16 +73,14 @@ export default function App() {
   };
 
   // Perform the fetch operation (or simulation step if no endpoint)
-  const triggerUpdateCycle = async (overrideEndpoint?: string) => {
-    const targetEndpoint = overrideEndpoint !== undefined ? overrideEndpoint : activeEndpoint;
+  const triggerUpdateCycle = async () => {
+    const targetEndpoint = API_ENDPOINT;
     
     if (!targetEndpoint) {
       // 1. SIMULATOR MODE
-      if (!isSimulationPaused) {
-        setDashboardData(prev => simulateActivity(prev));
-        setHasConnectionError(false);
-        setSecondsSinceLastUpdate(0);
-      }
+      setDashboardData(prev => simulateActivity(prev));
+      setHasConnectionError(false);
+      setSecondsSinceLastUpdate(0);
       return;
     }
 
@@ -107,8 +101,9 @@ export default function App() {
       
       if (isStaticHost) {
         try {
-          // Direct client-side fetch for static servers
-          response = await fetch(targetEndpoint, { signal: controller.signal });
+          // Direct client-side fetch for static servers with a cache buster
+          const urlWithBuster = targetEndpoint + (targetEndpoint.includes('?') ? '&' : '?') + `_cb=${Date.now()}`;
+          response = await fetch(urlWithBuster, { signal: controller.signal });
         } catch (directErr) {
           console.warn("Direct fetch failed, will try proxy workaround...", directErr);
         }
@@ -116,14 +111,15 @@ export default function App() {
       
       if (!response) {
         try {
-          // Proxy fetch to bypass local browser CORS rules in the dev sandbox frame
-          const proxyUrl = `/api/team-dashboard?url=${encodeURIComponent(targetEndpoint)}`;
+          // Proxy fetch to bypass local browser CORS rules in the dev sandbox frame with a cache buster
+          const proxyUrl = `/api/team-dashboard?url=${encodeURIComponent(targetEndpoint)}&_cb=${Date.now()}`;
           response = await fetch(proxyUrl, { signal: controller.signal });
           usedProxy = true;
         } catch (proxyErr) {
           // If proxy is absent (or returns a network error on a static site), fetch directly through the browser instead
           console.warn("Proxy connection failed (likely on static host), attempting direct browser fetch...", proxyErr);
-          response = await fetch(targetEndpoint, { signal: controller.signal });
+          const fallbackUrlWithBuster = targetEndpoint + (targetEndpoint.includes('?') ? '&' : '?') + `_cb=${Date.now()}`;
+          response = await fetch(fallbackUrlWithBuster, { signal: controller.signal });
         }
       }
       
@@ -159,7 +155,29 @@ export default function App() {
       
       // Ensure the return shape is consistent
       if (data && data.members && data.activity) {
-        setDashboardData(data);
+        // Sanitize members to correct raw API status inconsistencies (e.g. if member has logged in but has no logout time)
+        const sanitizedMembers = data.members.map((m: Member) => {
+          if (m.status === 'logged_out' && m.login && !m.logout) {
+            if (m.breakStart && !m.back) {
+              return { ...m, status: 'break' as const };
+            } else {
+              return { ...m, status: 'working' as const };
+            }
+          }
+          return { ...m };
+        });
+
+        // Recheck/evaluate missing updates and recalculate statistics dynamically to keep everything perfectly in sync
+        const evaluatedMembers = evaluateMissingUpdates(sanitizedMembers);
+        const recalculatedStats = calculateStats(evaluatedMembers);
+
+        setDashboardData({
+          lastUpdated: data.lastUpdated || new Date().toISOString(),
+          stats: recalculatedStats,
+          members: evaluatedMembers,
+          activity: data.activity
+        });
+
         setHasConnectionError(false);
         setConnectionErrorDetail(null);
         setSecondsSinceLastUpdate(0);
@@ -173,9 +191,7 @@ export default function App() {
       setConnectionErrorDetail(message);
       
       // Resilient local fallback: trigger simulation step so the beautiful UI remains active while the developer configures their endpoint!
-      if (!isSimulationPaused) {
-        setDashboardData(prev => simulateActivity(prev));
-      }
+      setDashboardData(prev => simulateActivity(prev));
     } finally {
       setIsFetching(false);
     }
@@ -183,6 +199,9 @@ export default function App() {
 
   // 1-second interval timer for the relative seconds clock and countdown ticking
   useEffect(() => {
+    // Trigger update immediately on mount
+    triggerUpdateCycle();
+
     clockTimerRef.current = setInterval(() => {
       // Tick up the elapsed time since last success
       setSecondsSinceLastUpdate(prev => prev + 1);
@@ -190,9 +209,9 @@ export default function App() {
       // Tick down the polling timer
       setCountdown(prev => {
         if (prev <= 1) {
-          // Trigger updates at 0 and reset back to 20
+          // Trigger updates at 0 and reset back to 60
           triggerUpdateCycle();
-          return 20;
+          return 60;
         }
         return prev - 1;
       });
@@ -201,7 +220,7 @@ export default function App() {
     return () => {
       if (clockTimerRef.current) clearInterval(clockTimerRef.current);
     };
-  }, [activeEndpoint, isSimulationPaused]);
+  }, []);
 
   // Keep the selected member directory info updated when the global status changes!
   useEffect(() => {
@@ -216,28 +235,114 @@ export default function App() {
   // Handle immediate manual update/poll requests
   const handleImmediateRefresh = () => {
     triggerUpdateCycle();
-    setCountdown(20);
+    setCountdown(60);
   };
+
+  // Derive and process the activity feed:
+  // 1. Map names from sheet/trello to official name from the members table
+  // 2. Filter to only contain updates for the current day
+  // 3. Remove duplicate activities
+  // 4. Sort with newest updates at the top
+  const processedActivity = (() => {
+    const today = new Date();
+    
+    // Step 1: Replace raw activity names with names from the official dashboard member roster
+    const nameMappedActivity = (dashboardData.activity || []).map(item => {
+      const rawName = (item.name || '').trim();
+      const tName = rawName.toLowerCase();
+      
+      // Look up member with robust overrides including Mahmoud/Shams and case variations
+      const overrides: Record<string, string> = {
+        'mahmoud94787805': 'shams',
+        'abdelrahmanseraj': 'Abdelrahman',
+        'joegirgis4': 'joe',
+        'minazakhary5': 'mina',
+        'omarabdalmonem': 'omar'
+      };
+
+      let officialName = rawName;
+      const matchedKey = Object.keys(overrides).find(key => 
+        key.toLowerCase() === tName || 
+        tName.includes(key.toLowerCase()) || 
+        key.toLowerCase().includes(tName)
+      );
+      
+      if (matchedKey) {
+        const foundMember = dashboardData.members.find(m => m.name.toLowerCase() === overrides[matchedKey].toLowerCase());
+        if (foundMember) {
+          officialName = foundMember.name;
+        }
+      } else {
+        const matchedMember = dashboardData.members.find(m => {
+          const mName = m.name.toLowerCase();
+          const mId = m.id.toLowerCase().replace('trello_', '');
+          return mName === tName || mId === tName || mName.includes(tName) || tName.includes(mName);
+        });
+        if (matchedMember) {
+          officialName = matchedMember.name;
+        }
+      }
+      
+      return {
+        ...item,
+        name: officialName
+      };
+    });
+
+    // Step 2: Filter for updates belonging ONLY to the current day (if simulator mode; if live endpoint is present, trust the API parameters and display all fetched events)
+    const currentDayActivity = nameMappedActivity.filter(item => {
+      if (API_ENDPOINT) return true; // Show all items fetched from n8n
+      if (!item.date) return false;
+      const itemDate = new Date(item.date);
+      // Verify year, month, date are exactly the same as today's local date or UTC date, or within last 36 hours for safe offset
+      const isLocalToday = itemDate.getFullYear() === today.getFullYear() &&
+                           itemDate.getMonth() === today.getMonth() &&
+                           itemDate.getDate() === today.getDate();
+      const isUtcToday = itemDate.getUTCFullYear() === today.getUTCFullYear() &&
+                         itemDate.getUTCMonth() === today.getUTCMonth() &&
+                         itemDate.getUTCDate() === today.getUTCDate();
+      const isWithinLast36h = Math.abs(today.getTime() - itemDate.getTime()) <= 36 * 60 * 60 * 1000;
+      return isLocalToday || isUtcToday || isWithinLast36h;
+    });
+
+    // Step 3: De-duplicate events (e.g. if the webhook returned repeated lines or if same item was pushed multiple times)
+    const uniqueActivity = currentDayActivity.filter((item, index, self) => {
+      const firstIndex = self.findIndex(x => {
+        if (x.id && item.id) {
+          return x.id === item.id;
+        }
+        // Unique based on contents and timestamp to avoid false duplication but catch duplicated messages
+        return x.name === item.name &&
+               x.type === item.type &&
+               x.content === item.content &&
+               x.card === item.card &&
+               x.date === item.date;
+      });
+      return firstIndex === index;
+    });
+
+    // Step 4: Sort descending with the newest updates at the top
+    const sortedActivity = [...uniqueActivity].sort((a, b) => {
+      return new Date(b.date).getTime() - new Date(a.date).getTime();
+    });
+
+    return sortedActivity;
+  })();
 
   return (
     <div id="app-root-container" className="min-h-screen bg-[#F8FAFC] font-sans antialiased text-slate-800 pb-12">
       {/* 1. Header Banner */}
       <header id="app-main-header" className="sticky top-0 z-40 bg-white border-b border-slate-100 shadow-[0_1px_2px_rgba(0,0,0,0.01)] backdrop-blur-md bg-white/95">
-        <div className="max-w-7xl mx-auto px-4 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div className="w-full px-4 sm:px-6 lg:px-8 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           
           {/* Brand Name */}
-          <div className="flex items-center gap-3">
-            <div className="h-9 w-9 bg-[#0B1F3A] rounded-xl flex items-center justify-center text-white shadow-sm shrink-0">
-              <Users className="w-5 h-5" />
-            </div>
-            <div>
-              <h1 className="text-base font-bold text-[#0B1F3A] tracking-tight">Team Activity</h1>
-              <p className="text-[11px] text-slate-400 font-medium">Monitoring shift intervals and Trello logs</p>
-            </div>
+          <div>
+            <h1 className="text-lg font-bold text-[#0B1F3A] tracking-tight">Billy's Dashboard</h1>
+            <p className="text-[11px] text-slate-400 font-medium">Monitoring shift intervals and Trello logs</p>
           </div>
 
           {/* Indicators & Refresh Status */}
-          <div className="flex flex-wrap items-center gap-4 text-xs">
+          <div className="flex items-center gap-3 text-xs">
             {/* Connection State Badge */}
             {hasConnectionError ? (
               <span id="conn-state-err" className="inline-flex items-center gap-1.5 font-semibold text-red-650 bg-red-50 px-2.5 py-1 rounded-full border border-red-100 animate-pulse">
@@ -251,131 +356,23 @@ export default function App() {
               </span>
             )}
 
-            {/* Last Successful Update Status */}
-            <div className="flex items-center gap-1.5 font-medium text-slate-550 border-r border-slate-100 pr-4">
-              <Clock className="w-3.5 h-3.5 text-slate-400" />
-              <span>Last updated · <strong className="text-slate-700 font-semibold">{secondsSinceLastUpdate}s ago</strong></span>
-            </div>
-
-            {/* Interval Timer Countdown */}
-            <div className="flex items-center gap-2">
-              <span className="text-[11px] font-mono bg-slate-100 text-[#0B1F3A] font-bold px-2 py-1 rounded select-none cursor-pointer" title="Refresh Countdown Indicator">
-                Next update in: <span className="text-[#2563EB]">{countdown}s</span>
-              </span>
-              
-              <button
-                id="manual-refresh-btn"
-                onClick={handleImmediateRefresh}
-                disabled={isFetching}
-                className={`p-1.5 rounded-lg text-slate-500 hover:text-[#0B1F3A] hover:bg-slate-50 border border-slate-200 focus:outline-none focus:ring-1 focus:ring-[#2563EB] transition-all disabled:opacity-50 ${isFetching ? 'animate-spin' : ''}`}
-                title="Refresh updates now"
-              >
-                <RotateCw className="w-3.5 h-3.5" />
-              </button>
-
-              <button
-                id="toggle-sim-config"
-                onClick={() => setShowConfig(!showConfig)}
-                className={`p-1.5 rounded-lg border focus:outline-none focus:ring-1 focus:ring-[#2563EB] transition-all ${showConfig ? 'bg-indigo-50 border-indigo-200 text-indigo-700' : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50'}`}
-                title="Configure Endpoint URL / Simulator Settings"
-              >
-                <Settings className="w-3.5 h-3.5" />
-              </button>
-            </div>
-
+            <button
+              id="manual-refresh-btn"
+              onClick={handleImmediateRefresh}
+              disabled={isFetching}
+              className={`p-1.5 rounded-lg text-slate-500 hover:text-[#0B1F3A] hover:bg-slate-50 border border-slate-200 focus:outline-none focus:ring-1 focus:ring-[#2563EB] transition-all disabled:opacity-50 ${isFetching ? 'animate-spin' : ''}`}
+              title="Refresh updates now"
+            >
+              <RotateCw className="w-3.5 h-3.5" />
+            </button>
           </div>
         </div>
       </header>
 
-      {/* 2. Custom Config Ribbon (Gear dropdown) */}
-      <AnimatePresence>
-        {showConfig && (
-          <motion.div
-            id="config-ribbon"
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: 'auto' }}
-            exit={{ opacity: 0, height: 0 }}
-            className="bg-slate-50 border-b border-slate-200/60 overflow-hidden"
-          >
-            <div className="max-w-7xl mx-auto px-4 py-4 grid grid-cols-1 md:grid-cols-3 gap-5 text-xs">
-              
-              {/* Endpoint configuration */}
-              <div className="space-y-1.5 md:col-span-2">
-                <span className="block font-bold text-slate-700 uppercase tracking-wide text-[10px] flex items-center gap-1">
-                  <Database className="w-3.5 h-3.5 text-indigo-550" />
-                  Trello Tagger JSON API Endpoint URL
-                </span>
-                <div className="flex gap-2">
-                  <input
-                    id="api-url-input"
-                    type="text"
-                    spellCheck={false}
-                    className="flex-1 bg-white border border-slate-200 rounded-lg px-3 py-1.5 text-xs font-mono select-all focus:outline-none focus:ring-1 focus:ring-[#2563EB]"
-                    placeholder="Enter JSON target url... (Leave blank for simulation)"
-                    value={activeEndpoint}
-                    onChange={(e) => setActiveEndpoint(e.target.value)}
-                  />
-                  <button
-                    id="save-ep-btn"
-                    onClick={() => {
-                      triggerUpdateCycle(activeEndpoint);
-                      setCountdown(20);
-                    }}
-                    className="px-3 py-1.5 bg-[#2563EB] hover:bg-blue-700 text-white font-semibold rounded-lg transition-colors"
-                  >
-                    Connect
-                  </button>
-                </div>
-                <p className="text-[10px] text-slate-400">
-                  {API_ENDPOINT 
-                    ? `Default configured: "${API_ENDPOINT}"` 
-                    : "No defaults provided. Running in client-side active simulator."}
-                </p>
-              </div>
 
-              {/* Simulation State Controllers */}
-              <div className="space-y-1.5 p-3 bg-white border border-slate-105 rounded-xl">
-                <span className="block font-bold text-slate-700 uppercase tracking-wide text-[10px]">
-                  Simulation controls
-                </span>
-                <div className="flex items-center gap-2">
-                  <button
-                    id="toggle-sim-pause-btn"
-                    onClick={() => setIsSimulationPaused(!isSimulationPaused)}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-semibold border text-xs transition-colors ${
-                      isSimulationPaused 
-                        ? 'bg-amber-50 text-amber-700 border-amber-200' 
-                        : 'bg-green-50 text-green-700 border-green-200'
-                    }`}
-                  >
-                    {isSimulationPaused ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
-                    {isSimulationPaused ? 'Resume Auto-Tick' : 'Pause Auto-Tick'}
-                  </button>
-
-                  <button
-                    id="simulate-tick-now-btn"
-                    onClick={() => {
-                      setDashboardData(prev => simulateActivity(prev));
-                      setSecondsSinceLastUpdate(0);
-                    }}
-                    className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-lg text-xs transition-colors"
-                    title="Simulate random live activity instantly"
-                  >
-                    Trigger Event
-                  </button>
-                </div>
-                <span className="block text-[9px] text-slate-400">
-                  Allows simulating random actions instantly (ideal for reviewing animations).
-                </span>
-              </div>
-
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
 
       {/* 3. Main Page Layout Grid */}
-      <main id="app-main-content" className="max-w-7xl mx-auto px-4 mt-6 space-y-6">
+      <main id="app-main-content" className="w-full px-4 sm:px-6 lg:px-8 mt-6 space-y-6 flex-1">
         
         {/* Connection Failure Diagnostic Banner */}
         <AnimatePresence>
@@ -480,7 +477,7 @@ export default function App() {
           {/* Activity Timeline Feed: Right 40% (4 cols) */}
           <div className="lg:col-span-4">
             <LiveActivityFeed 
-              activity={dashboardData.activity}
+              activity={processedActivity}
               getCurrentTimeDiffString={getCurrentTimeDiffString}
             />
           </div>
@@ -494,7 +491,8 @@ export default function App() {
         {selectedMember && (
           <MemberDetailDrawer
             member={selectedMember}
-            activity={dashboardData.activity}
+            activity={processedActivity}
+            allMembers={dashboardData.members}
             getCurrentTimeDiffString={getCurrentTimeDiffString}
             onClose={() => setSelectedMember(null)}
           />

@@ -7,15 +7,17 @@ import { Member, ActivityItem } from '../types';
 import { motion } from 'motion/react';
 import { X, Calendar, Clock, Coffee, LogOut, BellOff, Info, Award, ListTodo } from 'lucide-react';
 import { getActivityConfig } from './LiveActivityFeed';
+import { ShiftCalendar } from './ShiftCalendar';
 
 interface MemberDetailDrawerProps {
   member: Member | null;
   activity: ActivityItem[];
+  allMembers: Member[];
   onClose: () => void;
   getCurrentTimeDiffString: (isoString: string) => string;
 }
 
-export function MemberDetailDrawer({ member, activity, onClose, getCurrentTimeDiffString }: MemberDetailDrawerProps) {
+export function MemberDetailDrawer({ member, activity, allMembers, onClose, getCurrentTimeDiffString }: MemberDetailDrawerProps) {
   if (!member) return null;
 
   // Filter global activity logs to just show things done by this member
@@ -148,6 +150,12 @@ export function MemberDetailDrawer({ member, activity, onClose, getCurrentTimeDi
               </div>
             </div>
           </div>
+
+          {/* Interactive Shift Calendar & Coverage */}
+          <ShiftCalendar 
+            member={member} 
+            allMembers={allMembers} 
+          />
 
           {/* Activity Logs (Individual) */}
           <div className="space-y-4 pt-2">

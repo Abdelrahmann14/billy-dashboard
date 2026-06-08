@@ -54,7 +54,7 @@ export function StatsStrip({ stats }: StatsStripProps) {
     },
     {
       id: 'updated_last_2h',
-      label: 'Posted Update (Last 2h)',
+      label: 'Posted Update (Today)',
       value: stats.updatedLast2h,
       icon: Clock,
       colorClass: 'text-blue-700 bg-blue-50/50 border-blue-100',
