@@ -90,22 +90,66 @@ export default function App() {
       return;
     }
 
-    // 2. REAL FETCH API MODE (Routed via server-side security/CORS bypass proxy)
+    // 2. REAL FETCH API MODE (Bypasses CORS via proxy when available, or fetches directly if on a static host like GitHub Pages)
     setIsFetching(true);
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 12000); // generous timeout for n8n cold-starts
       
-      const proxyUrl = `/api/team-dashboard?url=${encodeURIComponent(targetEndpoint)}`;
-      const response = await fetch(proxyUrl, { signal: controller.signal });
+      let response: Response | undefined;
+      let usedProxy = false;
+      
+      // Determine if we should attempt direct fetch first (e.g., when hosted on a static domain like github.io)
+      const isStaticHost = window.location.hostname.endsWith('github.io') || 
+                           window.location.hostname.endsWith('pages.dev') ||
+                           window.location.hostname.endsWith('vercel.app') ||
+                           window.location.hostname.endsWith('netlify.app');
+      
+      if (isStaticHost) {
+        try {
+          // Direct client-side fetch for static servers
+          response = await fetch(targetEndpoint, { signal: controller.signal });
+        } catch (directErr) {
+          console.warn("Direct fetch failed, will try proxy workaround...", directErr);
+        }
+      }
+      
+      if (!response) {
+        try {
+          // Proxy fetch to bypass local browser CORS rules in the dev sandbox frame
+          const proxyUrl = `/api/team-dashboard?url=${encodeURIComponent(targetEndpoint)}`;
+          response = await fetch(proxyUrl, { signal: controller.signal });
+          usedProxy = true;
+        } catch (proxyErr) {
+          // If proxy is absent (or returns a network error on a static site), fetch directly through the browser instead
+          console.warn("Proxy connection failed (likely on static host), attempting direct browser fetch...", proxyErr);
+          response = await fetch(targetEndpoint, { signal: controller.signal });
+        }
+      }
+      
       clearTimeout(timeoutId);
 
-      if (!response.ok) {
-        let errMsg = `Proxy response returned HTTP ${response.status}`;
+      if (!response || !response.ok) {
+        // If the proxy route gave an error, try direct fetch once as a bulletproof secondary fallback
+        if (usedProxy) {
+          try {
+            const fallbackController = new AbortController();
+            const fallbackTimeoutId = setTimeout(() => fallbackController.abort(), 8000);
+            const fallbackResponse = await fetch(targetEndpoint, { signal: fallbackController.signal });
+            clearTimeout(fallbackTimeoutId);
+            if (fallbackResponse.ok) {
+              response = fallbackResponse;
+            }
+          } catch (_) {}
+        }
+      }
+
+      if (!response || !response.ok) {
+        let errMsg = response ? `Response returned HTTP ${response.status}` : "Network connection failed";
         try {
-          const errPayload = await response.json();
+          const errPayload = await response?.json();
           if (errPayload && errPayload.error) {
-            errMsg = `${errPayload.error} (HTTP ${response.status})`;
+            errMsg = `${errPayload.error} (HTTP ${response?.status})`;
           }
         } catch (_) {}
         throw new Error(errMsg);
