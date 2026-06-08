@@ -10,7 +10,7 @@ async function startServer() {
 
   // Proxy endpoint to perform server-to-server fetch and bypass browser CORS limits
   app.get("/api/team-dashboard", async (req, res) => {
-    const targetUrl = (req.query.url as string) || "https://athina.pixelearth.co.uk/webhook-test/team-dashboard";
+    const targetUrl = (req.query.url as string) || "https://athina.pixelearth.co.uk/webhook/team-dashboard";
 
     try {
       const controller = new AbortController();

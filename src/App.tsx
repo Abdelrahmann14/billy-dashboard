@@ -34,7 +34,7 @@ import {
 // If empty, the dashboard automatically runs an exciting, high-fidelity,
 // real-time simulation engine that changes statuses/activities live!
 // ==========================================
-const API_ENDPOINT = "https://athina.pixelearth.co.uk/webhook-test/team-dashboard";
+const API_ENDPOINT = "https://athina.pixelearth.co.uk/webhook/team-dashboard";
 
 export default function App() {
   const [dashboardData, setDashboardData] = useState<DashboardData>(() => getInitialDashboardData());
